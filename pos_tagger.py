@@ -2,11 +2,9 @@ from multiprocessing import Pool
 import numpy as np
 import time
 from tagger_utils import *
-
-
+import os
 
 """ Contains the part of speech tagger class. """
-
 
 def evaluate(data, model):
     """Evaluates the POS model on some sentences and gold tags.
@@ -18,149 +16,187 @@ def evaluate(data, model):
 
     You might want to refactor this into several different evaluation functions,
     or you can use it as is. 
-    
+
     As per the write-up, you may find it faster to use multiprocessing (code included). 
-    
+
     """
     processes = 4
     sentences = data[0]
     tags = data[1]
     n = len(sentences)
-    k = n//processes
+    k = n // processes
     n_tokens = sum([len(d) for d in sentences])
     unk_n_tokens = sum([1 for s in sentences for w in s if w not in model.word2idx.keys()])
-    predictions = {i:None for i in range(n)}
-    probabilities = {i:None for i in range(n)}
-         
+    predictions = {i: None for i in range(n)}
+    probabilities = {i: None for i in range(n)}
+
     start = time.time()
     pool = Pool(processes=processes)
     res = []
     for i in range(0, n, k):
-        res.append(pool.apply_async(infer_sentences, [model, sentences[i:i+k], i]))
+        res.append(pool.apply_async(infer_sentences, [model, sentences[i:i + k], i]))
     ans = [r.get(timeout=None) for r in res]
     predictions = dict()
     for a in ans:
         predictions.update(a)
-    print(f"Inference Runtime: {(time.time()-start)/60} minutes.")
-    
+    print(f"Inference Runtime: {(time.time() - start) / 60} minutes.")
+
     start = time.time()
     pool = Pool(processes=processes)
     res = []
     for i in range(0, n, k):
-        res.append(pool.apply_async(compute_prob, [model, sentences[i:i+k], tags[i:i+k], i]))
+        res.append(pool.apply_async(compute_prob, [model, sentences[i:i + k], tags[i:i + k], i]))
     ans = [r.get(timeout=None) for r in res]
     probabilities = dict()
     for a in ans:
         probabilities.update(a)
-    print(f"Probability Estimation Runtime: {(time.time()-start)/60} minutes.")
+    print(f"Probability Estimation Runtime: {(time.time() - start) / 60} minutes.")
 
-
-    token_acc = sum([1 for i in range(n) for j in range(len(sentences[i])) if tags[i][j] == predictions[i][j]]) / n_tokens
-    unk_token_acc = sum([1 for i in range(n) for j in range(len(sentences[i])) if tags[i][j] == predictions[i][j] and sentences[i][j] not in model.word2idx.keys()]) / unk_n_tokens
+    token_acc = sum([1 for i in range(n) for j in range(len(sentences[i])) if
+                     tags[i][j] == predictions[i][j]]) / n_tokens
+    unk_token_acc = sum([1 for i in range(n) for j in range(len(sentences[i])) if
+                         tags[i][j] == predictions[i][j] and sentences[i][j] not in model.word2idx.keys()]) / unk_n_tokens
     whole_sent_acc = 0
     num_whole_sent = 0
     for k in range(n):
         sent = sentences[k]
         eos_idxes = indices(sent, '.')
         start_idx = 1
-        end_idx = eos_idxes[0]
+        end_idx = eos_idxes[0] if eos_idxes else len(sent)
         for i in range(1, len(eos_idxes)):
             whole_sent_acc += 1 if tags[k][start_idx:end_idx] == predictions[k][start_idx:end_idx] else 0
             num_whole_sent += 1
-            start_idx = end_idx+1
+            start_idx = end_idx + 1
             end_idx = eos_idxes[i]
-    print("Whole sent acc: {}".format(whole_sent_acc/num_whole_sent))
-    print("Mean Probabilities: {}".format(sum(probabilities.values())/n))
+    print("Whole sent acc: {}".format(whole_sent_acc / num_whole_sent if num_whole_sent > 0 else 0))
+    print("Mean Probabilities: {}".format(sum(probabilities.values()) / n))
     print("Token acc: {}".format(token_acc))
     print("Unk token acc: {}".format(unk_token_acc))
-    
-    confusion_matrix(pos_tagger.tag2idx, pos_tagger.idx2tag, predictions.values(), tags, 'cm.png')
 
-    return whole_sent_acc/num_whole_sent, token_acc, sum(probabilities.values())/n
+    confusion_matrix(model.tag2idx, model.idx2tag, predictions.values(), tags, 'cm.png')
 
-"""Handle Unknown Word using Suffix Tree"""
+    return whole_sent_acc / num_whole_sent if num_whole_sent > 0 else 0, token_acc, sum(probabilities.values()) / n
 
-class SuffixTree:
-    def __init__(self):
-        self.suffix_dict = {}
+def infer_sentences(model, sentences, idx_offset):
+    predictions = {}
+    for i, sentence in enumerate(sentences):
+        pred_tags = model.inference(sentence)
+        predictions[idx_offset + i] = pred_tags
+    return predictions
 
-    def add_word(self, word, tag):
-        """Add a word and its tag to the suffix tree."""
-        for i in range(len(word)):
-            suffix = word[i:]  # Generate suffix
-            if suffix not in self.suffix_dict:
-                self.suffix_dict[suffix] = []
-            self.suffix_dict[suffix].append(tag)  # Append the associated tag
-
-    def get_tags_by_suffix(self, suffix):
-        """Get possible tags for a given suffix."""
-        return self.suffix_dict.get(suffix, [])
-
+def compute_prob(model, sentences, tags_list, idx_offset):
+    probabilities = {}
+    for i, (sentence, tags) in enumerate(zip(sentences, tags_list)):
+        prob = model.sequence_probability(sentence, tags)
+        probabilities[idx_offset + i] = prob
+    return probabilities
 
 class POSTagger():
     def __init__(self):
         """Initializes the tagger model parameters and anything else necessary. """
-        self.k = 1
-        self.unigrams = None
-        self.bigrams = None
-        self.trigrams = None
-        self.trigram_probs = None
-        self.bigram_probs = None
-        self.unigram_probs = None
-        self.suffix_tree = SuffixTree()
-    
-    
+        self.unigram_counts = None
+        self.bigram_counts = None
+        self.trigram_counts = None
+        self.emission_counts = None
+        self.all_tags = []
+        self.tag2idx = {}
+        self.idx2tag = {}
+        self.word2idx = {}
+        self.idx2word = {}
+        self.vocab = set()
+        self.transition_probs = {}
+        self.emission_probs = {}
+        self.total_tags = 0
+        self.total_tokens = 0
+        self.glove_embeddings = {}
+        # Smoothing parameters
+        self.k = 1e-5  # Add-k smoothing parameter
+        # Linear interpolation weights (should sum to 1)
+        self.l1 = 0.1
+        self.l2 = 0.3
+        self.l3 = 0.6
+
     def get_unigrams(self):
         """
-        Computes unigrams. 
-        Tip. Map each tag to an integer and store the unigrams in a numpy array. 
-        
+        Computes unigram probabilities with Add-k smoothing.
         """
-        counts = np.zeros(len(self.all_tags))
-        for tags in self.data[1]:
-            for tag in tags:
-                counts[self.tag2idx[tag]] += 1
-        self.unigram_probs = counts / counts.sum()  # Normalize
-        return self.unigram_probs
+        self.unigram_probs_ml = self.unigram_counts / self.total_tags
+        # Add-k smoothing
+        self.unigram_probs = (self.unigram_counts + self.k) / (self.total_tags + self.k * len(self.all_tags))
 
+    def get_bigrams(self):
+        """
+        Computes bigram probabilities with Add-k smoothing.
+        """
+        num_tags = len(self.all_tags)
+        self.bigram_probs_ml = np.zeros((num_tags, num_tags))
+        for i in range(num_tags):
+            count_ti = self.unigram_counts[i]
+            if count_ti > 0:
+                self.bigram_probs_ml[i, :] = self.bigram_counts[i, :] / count_ti
+            else:
+                self.bigram_probs_ml[i, :] = 0
+        # Add-k smoothing
+        self.bigram_probs = (self.bigram_counts + self.k) / (self.unigram_counts[:, None] + self.k * num_tags)
 
-    def get_bigrams(self):        
-        """
-        Computes bigrams. 
-        Tip. Map each tag to an integer and store the bigrams in a numpy array
-             such that bigrams[index[tag1], index[tag2]] = Prob(tag2|tag1). 
-        """
-        bigram_counts = np.zeros((len(self.all_tags), len(self.all_tags)))
-        for tags in self.data[1]:
-            for i in range(len(tags) - 1):
-                bigram_counts[self.tag2idx[tags[i]], self.tag2idx[tags[i + 1]]] += 1
-        self.bigram_probs = (bigram_counts + self.k) / (bigram_counts.sum(axis=1, keepdims=True) + self.k * len(self.all_tags))
-        return self.bigram_probs
-    
     def get_trigrams(self):
         """
-        Computes trigrams. 
-        Tip. Similar logic to unigrams and bigrams. Store in numpy array. 
+        Computes trigram probabilities with Add-k smoothing.
         """
-        trigram_counts = np.zeros((len(self.all_tags), len(self.all_tags), len(self.all_tags)))
-        for tags in self.data[1]:
-            for i in range(len(tags) - 2):
-                trigram_counts[self.tag2idx[tags[i]], self.tag2idx[tags[i + 1]], self.tag2idx[tags[i + 2]]] += 1
+        num_tags = len(self.all_tags)
+        self.trigram_probs_ml = np.zeros((num_tags, num_tags, num_tags))
+        for i in range(num_tags):
+            for j in range(num_tags):
+                count_ti_tj = self.bigram_counts[i, j]
+                if count_ti_tj > 0:
+                    self.trigram_probs_ml[i, j, :] = self.trigram_counts[i, j, :] / count_ti_tj
+                else:
+                    self.trigram_probs_ml[i, j, :] = 0
         # Add-k smoothing
-        # Linear interpolation 
-        return self.trigram_probs
+        self.trigram_probs = (self.trigram_counts + self.k) / (self.bigram_counts[:, :, None] + self.k * num_tags)
 
-    
-    
+    def compute_transition_probs(self):
+        """
+        Computes the smoothed transition probabilities using linear interpolation.
+        """
+        num_tags = len(self.all_tags)
+        self.transition_probs = np.zeros((num_tags, num_tags, num_tags))
+        for i in range(num_tags):
+            for j in range(num_tags):
+                for k in range(num_tags):
+                    p1 = self.trigram_probs_ml[i, j, k]
+                    p2 = self.bigram_probs_ml[j, k]
+                    p3 = self.unigram_probs_ml[k]
+                    self.transition_probs[i, j, k] = self.l1 * p1 + self.l2 * p2 + self.l3 * p3
+
     def get_emissions(self):
         """
-        Computes emission probabilities. 
-        Tip. Map each tag to an integer and each word in the vocabulary to an integer. 
-             Then create a numpy array such that lexical[index(tag), index(word)] = Prob(word|tag) 
+        Computes emission probabilities with Add-k smoothing.
         """
-        ## TODO
-        pass  
-    
+        num_tags = len(self.all_tags)
+        num_words = len(self.vocab)
+        self.emission_probs = np.zeros((num_tags, num_words))
+        for i in range(num_tags):
+            tag_count = self.unigram_counts[i]
+            self.emission_probs[i, :] = (self.emission_counts[i, :] + self.k) / (tag_count + self.k * num_words)
+
+    def load_glove_embeddings(self, glove_file='glove.6B.50d.txt'):
+        """
+        Load GloVe embeddings.
+        """
+        print("Loading GloVe embeddings for unknown words...")
+        embedding_dim = 50 
+        self.embedding_dim = embedding_dim
+        self.glove_embeddings = {}
+
+        with open(glove_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                values = line.strip().split()
+                word = values[0]
+                vector = np.asarray(values[1:], dtype='float32')
+                self.glove_embeddings[word] = vector
+
+        print("GloVe embeddings loaded.")
 
     def train(self, data):
         """Trains the model by computing transition and emission probabilities.
@@ -168,85 +204,220 @@ class POSTagger():
         You should also experiment:
             - smoothing.
             - N-gram models with varying N.
-        
+
         """
         self.data = data
-        self.all_tags = list(set([t for tag in data[1] for t in tag]))
-        self.tag2idx = {self.all_tags[i]:i for i in range(len(self.all_tags))}
-        self.idx2tag = {v:k for k,v in self.tag2idx.items()}
+        sentences, tags = data
 
-        words = set([word for sentence in data[0] for word in sentence])  # Extract unique words from sentences
-        self.word2idx = {word: i for i, word in enumerate(words)}  
+        # Build the vocabulary
+        self.vocab = set([w for s in sentences for w in s])
+        self.word2idx = {w: i for i, w in enumerate(self.vocab)}
+        self.idx2word = {i: w for w, i in self.word2idx.items()}
 
-        self.build_suffix_tree()
+        # Build tag mappings
+        self.all_tags = list(set([t for tag_seq in tags for t in tag_seq]))
+        self.tag2idx = {self.all_tags[i]: i for i in range(len(self.all_tags))}
+        self.idx2tag = {v: k for k, v in self.tag2idx.items()}
 
+        # Initialize counts
+        num_tags = len(self.all_tags)
+        num_words = len(self.vocab)
+
+        self.unigram_counts = np.zeros(num_tags)
+        self.bigram_counts = np.zeros((num_tags, num_tags))
+        self.trigram_counts = np.zeros((num_tags, num_tags, num_tags))
+        self.emission_counts = np.zeros((num_tags, num_words))
+
+        # Count unigrams, bigrams, trigrams, and emissions
+        for sent, tag_seq in zip(sentences, tags):
+            for i in range(len(tag_seq)):
+                tag_idx = self.tag2idx[tag_seq[i]]
+                word_idx = self.word2idx[sent[i]]
+
+                # Unigram:
+                self.unigram_counts[tag_idx] += 1
+
+                # Emission:
+                self.emission_counts[tag_idx, word_idx] += 1
+
+                # Bigram:
+                if i > 0:
+                    prev_tag_idx = self.tag2idx[tag_seq[i - 1]]
+                    self.bigram_counts[prev_tag_idx, tag_idx] += 1
+
+                # Trigram:
+                if i > 1:
+                    prev_prev_tag_idx = self.tag2idx[tag_seq[i - 2]]
+                    prev_tag_idx = self.tag2idx[tag_seq[i - 1]]
+                    self.trigram_counts[prev_prev_tag_idx, prev_tag_idx, tag_idx] += 1
+
+        self.total_tags = np.sum(self.unigram_counts)
+        self.total_tokens = np.sum(self.emission_counts)
+
+        # Apply smoothing and compute probabilities
         self.get_unigrams()
         self.get_bigrams()
         self.get_trigrams()
+        self.compute_transition_probs()
+        self.get_emissions()
+
+        # Load GloVe embeddings for unknown words only
+        glove_path = 'glove.6B.50d.txt'
+        if os.path.exists(glove_path):
+            self.load_glove_embeddings(glove_file=glove_path)
+        else:
+            print("GloVe embeddings not found. Please ensure the GloVe file is in the current directory.")
 
     def sequence_probability(self, sequence, tags):
-        """Computes the probability of a tagged sequence given the emission/transition
-        probabilities.
-        """
-        ## TODO
-        return 0.
+        """Computes the probability of a tagged sequence given the emission/transition probabilities."""
+        prob = 1.0
+        num_tags = len(self.all_tags)
+        for i in range(len(sequence)):
+            word = sequence[i]
+            word_idx = self.word2idx.get(word, None)
+            tag = tags[i]
+            tag_idx = self.tag2idx[tag]
 
-    def build_suffix_tree(self):
-        """Build the suffix tree from training data."""
-        for sentence, tags in zip(self.data[0], self.data[1]):
-            for word, tag in zip(sentence, tags):
-                if word in self.word2idx:  # Only add known words
-                    self.suffix_tree.add_word(word, tag)
-
-    def perform_inference(self, word):
-        word_index = self.word2idx[word]
-        max_prob = 0
-        best_tag = None
-
-        for tag, idx in self.tag2idx.items():
-            prob = self.unigram_probs[idx]
-            if prob > max_prob:
-                max_prob = prob
-                best_tag = tag
-
-        return best_tag
-        
-    def inference(self, sequence):
-        """Tags a sequence with part of speech tags.
-
-        You should implement different kinds of inference (suggested as separate
-        methods):
-
-            - greedy decoding
-            - decoding with beam search
-            - viterbi
-        """
-
-        predicted_tags = []
-        
-        for word in sequence:
-            if word in self.word2idx:
-                # If the word is known, use the standard inference method
-                tag = self.perform_inference(word)
+            # Emission probability
+            if word_idx is not None:
+                emission_prob = self.emission_probs[tag_idx, word_idx]
             else:
-                # Handle unknown word using suffix tree
-                possible_tags = []
-                for suffix in self.suffix_tree.suffix_dict.keys():
-                    if word.endswith(suffix):
-                        possible_tags.extend(self.suffix_tree.get_tags_by_suffix(suffix))
-                
-                # If there are possible tags, choose the most common one
-                if possible_tags:
-                    tag = max(set(possible_tags), key=possible_tags.count)  # Most common tag
+                emission_probs = self.handle_unknown_word(word)
+                emission_prob = emission_probs[tag_idx]
+
+            # Transition probability
+            if i > 1:
+                prev_prev_tag_idx = self.tag2idx[tags[i - 2]]
+                prev_tag_idx = self.tag2idx[tags[i - 1]]
+                transition_prob = self.transition_probs[prev_prev_tag_idx, prev_tag_idx, tag_idx]
+            elif i > 0:
+                prev_tag_idx = self.tag2idx[tags[i - 1]]
+                transition_prob = self.l2 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
+                                  self.l3 * self.unigram_probs_ml[tag_idx]
+            else:
+                transition_prob = self.unigram_probs_ml[tag_idx]
+
+            prob *= emission_prob * transition_prob
+
+        return prob
+
+    def handle_unknown_word(self, word):
+        """
+        Handle unknown words by estimating emission probabilities using GloVe embeddings.
+        """
+        num_tags = len(self.all_tags)
+        # If GloVe embeddings are available
+        if word in self.glove_embeddings:
+            word_embedding = self.glove_embeddings[word]
+        else:
+            # For words not in GloVe, use a zero vector
+            word_embedding = np.zeros(self.embedding_dim)
+
+        # Estimate emission probabilities based on similarity with tag embeddings
+        # For simplicity, let's assume each tag has an average embedding of words associated with it
+        # We'll precompute this if not already done
+        if not hasattr(self, 'tag_embeddings'):
+            self.compute_tag_embeddings()
+
+        emission_scores = np.zeros(num_tags)
+        for tag_idx in range(num_tags):
+            tag_embedding = self.tag_embeddings[tag_idx]
+            # Compute cosine similarity
+            similarity = np.dot(word_embedding, tag_embedding) / (
+                        np.linalg.norm(word_embedding) * np.linalg.norm(tag_embedding) + 1e-12)
+            emission_scores[tag_idx] = similarity
+
+        # Convert scores to probabilities
+        emission_probs = np.exp(emission_scores)
+        emission_probs /= np.sum(emission_probs)
+
+        return emission_probs
+
+    def compute_tag_embeddings(self):
+        """
+        Computes average embeddings for each tag based on words in the training data.
+        """
+        num_tags = len(self.all_tags)
+        self.tag_embeddings = np.zeros((num_tags, self.embedding_dim))
+        tag_counts = np.zeros(num_tags)
+
+        for word, idx in self.word2idx.items():
+            if word in self.glove_embeddings:
+                word_embedding = self.glove_embeddings[word]
+                for tag_idx in range(num_tags):
+                    count = self.emission_counts[tag_idx, idx]
+                    if count > 0:
+                        self.tag_embeddings[tag_idx] += word_embedding * count
+                        tag_counts[tag_idx] += count
+
+        for tag_idx in range(num_tags):
+            if tag_counts[tag_idx] > 0:
+                self.tag_embeddings[tag_idx] /= tag_counts[tag_idx]
+            else:
+                self.tag_embeddings[tag_idx] = np.zeros(self.embedding_dim)
+
+    def inference(self, sequence, method='greedy'):
+        """Tags a sequence with part of speech tags."""
+        if method == 'greedy':
+            return self.greedy_decode(sequence)
+        elif method == 'viterbi':
+            return self.viterbi_decode(sequence)
+        else:
+            raise ValueError('Unknown decoding method: {}'.format(method))
+
+    def greedy_decode(self, sequence):
+        """
+        Greedy decoding implementation.
+        """
+        num_tags = len(self.all_tags)
+        tag_sequence = []
+        prev_prev_tag_idx = None
+        prev_tag_idx = None
+
+        for i, word in enumerate(sequence):
+            word_idx = self.word2idx.get(word, None)
+            if word_idx is None:
+                # Handle unknown word
+                emission_probs = self.handle_unknown_word(word)
+            else:
+                # Get emission probabilities for this word
+                emission_probs = self.emission_probs[:, word_idx]
+
+            max_prob = 0
+            best_tag_idx = None
+
+            for tag_idx in range(num_tags):
+                # Compute transition probability
+                if prev_prev_tag_idx is not None and prev_tag_idx is not None:
+                    trans_prob = self.transition_probs[prev_prev_tag_idx, prev_tag_idx, tag_idx]
+                elif prev_tag_idx is not None:
+                    # Use bigram probability
+                    trans_prob = self.l2 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
+                                 self.l3 * self.unigram_probs_ml[tag_idx]
                 else:
-                    tag = 'NN'  # Default tag if no suffix matches
-            
-            predicted_tags.append(tag)
-        
-        return predicted_tags
+                    # Use unigram probability
+                    trans_prob = self.unigram_probs_ml[tag_idx]
 
+                # Compute total probability
+                prob = trans_prob * emission_probs[tag_idx]
 
+                if prob > max_prob:
+                    max_prob = prob
+                    best_tag_idx = tag_idx
 
+            tag_sequence.append(self.idx2tag[best_tag_idx])
+
+            # Update previous tags
+            prev_prev_tag_idx = prev_tag_idx
+            prev_tag_idx = best_tag_idx
+
+        return tag_sequence
+
+    def viterbi_decode(self, sequence):
+        """
+        Viterbi decoding implementation.
+        """
+        return
 
 if __name__ == "__main__":
     pos_tagger = POSTagger()
@@ -257,23 +428,16 @@ if __name__ == "__main__":
 
     pos_tagger.train(train_data)
 
-    # Experiment with your decoder using greedy decoding, beam search, viterbi...
-
-    # Here you can also implement experiments that compare different styles of decoding,
-    # smoothing, n-grams, etc.
+    # Evaluate on the development set
     evaluate(dev_data, pos_tagger)
 
     # Predict tags for the test set
     test_predictions = []
     for sentence in test_data:
-        test_predictions.extend(pos_tagger.inference(sentence))
-    
-    # Write them to a file to update the leaderboard
-    results = []
-    for idx, tags in enumerate(test_predictions):
-        results.append({'id': idx, 'tag': str(tags)})
+        tags = pos_tagger.inference(sentence)
+        test_predictions.append(tags)
 
-
-    df_predictions = pd.DataFrame(results)
-    df_predictions.to_csv('predictions.csv', index=False)
-
+    # Write the predictions to a file
+    with open("test_predictions.txt", "w") as f:
+        for tags in test_predictions:
+            f.write(" ".join(tags) + "\n")

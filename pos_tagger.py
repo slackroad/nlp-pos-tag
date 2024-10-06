@@ -78,20 +78,51 @@ def evaluate(data, model):
 
     return whole_sent_acc/num_whole_sent, token_acc, sum(probabilities.values())/n
 
+"""Handle Unknown Word using Suffix Tree"""
+
+class SuffixTree:
+    def __init__(self):
+        self.suffix_dict = {}
+
+    def add_word(self, word, tag):
+        """Add a word and its tag to the suffix tree."""
+        for i in range(len(word)):
+            suffix = word[i:]  # Generate suffix
+            if suffix not in self.suffix_dict:
+                self.suffix_dict[suffix] = []
+            self.suffix_dict[suffix].append(tag)  # Append the associated tag
+
+    def get_tags_by_suffix(self, suffix):
+        """Get possible tags for a given suffix."""
+        return self.suffix_dict.get(suffix, [])
+
 
 class POSTagger():
     def __init__(self):
         """Initializes the tagger model parameters and anything else necessary. """
-        pass
+        self.k = 1
+        self.unigrams = None
+        self.bigrams = None
+        self.trigrams = None
+        self.trigram_probs = None
+        self.bigram_probs = None
+        self.unigram_probs = None
+        self.suffix_tree = SuffixTree()
     
     
     def get_unigrams(self):
         """
         Computes unigrams. 
         Tip. Map each tag to an integer and store the unigrams in a numpy array. 
+        
         """
-        ## TODO
-        pass
+        counts = np.zeros(len(self.all_tags))
+        for tags in self.data[1]:
+            for tag in tags:
+                counts[self.tag2idx[tag]] += 1
+        self.unigram_probs = counts / counts.sum()  # Normalize
+        return self.unigram_probs
+
 
     def get_bigrams(self):        
         """
@@ -99,16 +130,26 @@ class POSTagger():
         Tip. Map each tag to an integer and store the bigrams in a numpy array
              such that bigrams[index[tag1], index[tag2]] = Prob(tag2|tag1). 
         """
-        ## TODO
-        pass
+        bigram_counts = np.zeros((len(self.all_tags), len(self.all_tags)))
+        for tags in self.data[1]:
+            for i in range(len(tags) - 1):
+                bigram_counts[self.tag2idx[tags[i]], self.tag2idx[tags[i + 1]]] += 1
+        self.bigram_probs = (bigram_counts + self.k) / (bigram_counts.sum(axis=1, keepdims=True) + self.k * len(self.all_tags))
+        return self.bigram_probs
     
     def get_trigrams(self):
         """
         Computes trigrams. 
         Tip. Similar logic to unigrams and bigrams. Store in numpy array. 
         """
-        ## TODO
-        pass
+        trigram_counts = np.zeros((len(self.all_tags), len(self.all_tags), len(self.all_tags)))
+        for tags in self.data[1]:
+            for i in range(len(tags) - 2):
+                trigram_counts[self.tag2idx[tags[i]], self.tag2idx[tags[i + 1]], self.tag2idx[tags[i + 2]]] += 1
+        # Add-k smoothing
+        # Linear interpolation 
+        return self.trigram_probs
+
     
     
     def get_emissions(self):
@@ -133,8 +174,15 @@ class POSTagger():
         self.all_tags = list(set([t for tag in data[1] for t in tag]))
         self.tag2idx = {self.all_tags[i]:i for i in range(len(self.all_tags))}
         self.idx2tag = {v:k for k,v in self.tag2idx.items()}
-        ## TODO
-        pass
+
+        words = set([word for sentence in data[0] for word in sentence])  # Extract unique words from sentences
+        self.word2idx = {word: i for i, word in enumerate(words)}  
+
+        self.build_suffix_tree()
+
+        self.get_unigrams()
+        self.get_bigrams()
+        self.get_trigrams()
 
     def sequence_probability(self, sequence, tags):
         """Computes the probability of a tagged sequence given the emission/transition
@@ -143,6 +191,26 @@ class POSTagger():
         ## TODO
         return 0.
 
+    def build_suffix_tree(self):
+        """Build the suffix tree from training data."""
+        for sentence, tags in zip(self.data[0], self.data[1]):
+            for word, tag in zip(sentence, tags):
+                if word in self.word2idx:  # Only add known words
+                    self.suffix_tree.add_word(word, tag)
+
+    def perform_inference(self, word):
+        word_index = self.word2idx[word]
+        max_prob = 0
+        best_tag = None
+
+        for tag, idx in self.tag2idx.items():
+            prob = self.unigram_probs[idx]
+            if prob > max_prob:
+                max_prob = prob
+                best_tag = tag
+
+        return best_tag
+        
     def inference(self, sequence):
         """Tags a sequence with part of speech tags.
 
@@ -153,8 +221,31 @@ class POSTagger():
             - decoding with beam search
             - viterbi
         """
-        ## TODO
-        return []
+
+        predicted_tags = []
+        
+        for word in sequence:
+            if word in self.word2idx:
+                # If the word is known, use the standard inference method
+                tag = self.perform_inference(word)
+            else:
+                # Handle unknown word using suffix tree
+                possible_tags = []
+                for suffix in self.suffix_tree.suffix_dict.keys():
+                    if word.endswith(suffix):
+                        possible_tags.extend(self.suffix_tree.get_tags_by_suffix(suffix))
+                
+                # If there are possible tags, choose the most common one
+                if possible_tags:
+                    tag = max(set(possible_tags), key=possible_tags.count)  # Most common tag
+                else:
+                    tag = 'NN'  # Default tag if no suffix matches
+            
+            predicted_tags.append(tag)
+        
+        return predicted_tags
+
+
 
 
 if __name__ == "__main__":
@@ -178,4 +269,11 @@ if __name__ == "__main__":
         test_predictions.extend(pos_tagger.inference(sentence))
     
     # Write them to a file to update the leaderboard
-    # TODO
+    results = []
+    for idx, tags in enumerate(test_predictions):
+        results.append({'id': idx, 'tag': str(tags)})
+
+
+    df_predictions = pd.DataFrame(results)
+    df_predictions.to_csv('predictions.csv', index=False)
+

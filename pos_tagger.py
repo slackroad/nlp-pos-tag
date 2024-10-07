@@ -3,6 +3,8 @@ import numpy as np
 import time
 from tagger_utils import *
 import os
+import math
+import csv
 
 """ Contains the part of speech tagger class. """
 
@@ -110,7 +112,7 @@ class POSTagger():
         self.total_tokens = 0
         self.glove_embeddings = {}
         # Smoothing parameters
-        self.k = 1e-5  # Add-k smoothing parameter
+        self.k = 1e-6  # Add-k smoothing parameter
         # Linear interpolation weights (should sum to 1)
         self.l1 = 0.1
         self.l2 = 0.3
@@ -118,54 +120,31 @@ class POSTagger():
 
     def get_unigrams(self):
         """
-        Computes unigram probabilities with Add-k smoothing.
+        Computes unigram probabilities with Add-k smoothing applied directly onto unigram_probs_ml.
         """
-        self.unigram_probs_ml = self.unigram_counts / self.total_tags
-        # Add-k smoothing
-        #self.unigram_probs = (self.unigram_counts + self.k) / (self.total_tags + self.k * len(self.all_tags))
-        #Laplace smoothing (k = 1)
-        #self.unigram_probs = (self.unigram_counts + 1) / (self.total_tags + len(self.all_tags))
-
+        num_tags = len(self.all_tags)
+        # Add-k smoothing applied directly
+        self.unigram_probs_ml = (self.unigram_counts + self.k) / (self.total_tags + self.k * num_tags)
 
     def get_bigrams(self):
         """
-        Computes bigram probabilities with Add-k smoothing.
+        Computes bigram probabilities with Add-k smoothing applied directly onto bigram_probs_ml.
         """
         num_tags = len(self.all_tags)
-        self.bigram_probs_ml = np.zeros((num_tags, num_tags))
-        for i in range(num_tags):
-            count_ti = self.unigram_counts[i]
-            if count_ti > 0:
-                self.bigram_probs_ml[i, :] = self.bigram_counts[i, :] / count_ti
-            else:
-                self.bigram_probs_ml[i, :] = 0
-        # Add-k smoothing
-        #self.bigram_probs = (self.bigram_counts + self.k) / (self.unigram_counts[:, None] + self.k * num_tags)
-        #Linear Interpolation (l2 and l3 should sum to 1)
-        #self.bigram_probs = 0.4 * self.bigram_probs_ml + 0.6 * self.unigram_probs_ml[None, :]
+        # Reshape unigram counts to match bigram_counts dimensions
+        unigram_counts = self.unigram_counts.reshape(-1, 1)
+        # Add-k smoothing applied directly
+        self.bigram_probs_ml = (self.bigram_counts + self.k) / (unigram_counts + self.k * num_tags)
 
     def get_trigrams(self):
         """
-        Computes trigram probabilities with Add-k smoothing.
+        Computes trigram probabilities with Add-k smoothing applied directly onto trigram_probs_ml.
         """
         num_tags = len(self.all_tags)
-        self.trigram_probs_ml = np.zeros((num_tags, num_tags, num_tags))
-        for i in range(num_tags):
-            for j in range(num_tags):
-                count_ti_tj = self.bigram_counts[i, j]
-                if count_ti_tj > 0:
-                    self.trigram_probs_ml[i, j, :] = self.trigram_counts[i, j, :] / count_ti_tj
-                else:
-                    self.trigram_probs_ml[i, j, :] = 0
-        # Add-k smoothing
-        #self.trigram_probs = (self.trigram_counts + self.k) / (self.bigram_counts[:, :, None] + self.k * num_tags)
-        #Linear Interpolation (l1, l2 and l3 should sum to 1)
-        #self.trigram_probs = (
-        #    0.2 * self.trigram_probs_ml +
-        #    0.3 * self.bigram_probs_ml[:, :, None] +
-        #    0.5 * self.unigram_probs_ml[None, None, :]
-        #)
-
+        # Reshape bigram counts to match trigram_counts dimensions
+        bigram_counts = self.bigram_counts.reshape(num_tags, num_tags, 1)
+        # Add-k smoothing applied directly
+        self.trigram_probs_ml = (self.trigram_counts + self.k) / (bigram_counts + self.k * num_tags)
 
     def compute_transition_probs(self):
         """
@@ -426,20 +405,21 @@ class POSTagger():
             prev_tag_idx = best_tag_idx
 
         return tag_sequence
-    
+
     def beam_search_decode(self, sequence, beam_width=3):
         """
         Beam search decoding implementation.
         
         :param sequence: The input sequence of words to tag.
         :param beam_width: The number of top paths to retain at each step (k-best paths).
+        :return: The best tag sequence as a list of tag names.
         """
         num_tags = len(self.all_tags)
         
-        # Each element in the beam is a tuple of (path, probability)
-        # `path` is a list of tag indices, and `probability` is the accumulated probability of that path.
-        beam = [([], 1.0)]  # Start with an empty path with probability 1.0
-
+        # Each element in the beam is a tuple of (path, log_probability)
+        # `path` is a list of tag indices, and `log_probability` is the accumulated log probability of that path.
+        beam = [([], 0.0)]  # Start with an empty path with log probability 0 (log(1))
+        
         for i, word in enumerate(sequence):
             word_idx = self.word2idx.get(word, None)
             if word_idx is None:
@@ -453,7 +433,7 @@ class POSTagger():
             new_beam = []
             
             # Expand each path in the beam
-            for path, path_prob in beam:
+            for path, log_prob in beam:
                 # Last two tags in the current path
                 prev_prev_tag_idx = path[-2] if len(path) > 1 else None
                 prev_tag_idx = path[-1] if len(path) > 0 else None
@@ -470,24 +450,30 @@ class POSTagger():
                     else:
                         # Use unigram probability
                         trans_prob = self.unigram_probs_ml[tag_idx]
-
-                    # Compute total probability
-                    prob = trans_prob * emission_probs[tag_idx]
-
-                    # Add the new path with its updated probability
-                    new_beam.append((path + [tag_idx], prob))
+                    
+                    # Avoid log(0) by setting a minimum probability
+                    trans_prob = max(trans_prob, 1e-12)
+                    emission_prob = emission_probs[tag_idx]
+                    emission_prob = max(emission_prob, 1e-12)
+                    
+                    # Compute total log probability
+                    total_log_prob = log_prob + math.log(trans_prob) + math.log(emission_prob)
+                    
+                    # Add the new path with its updated log probability
+                    new_beam.append((path + [tag_idx], total_log_prob))
             
-            # Sort the new beam by probability and retain only the top `beam_width` paths
-            new_beam.sort(key=lambda x: x[1], reverse=True)
+            # Sort the new beam by log probability and retain only the top `beam_width` paths
+            new_beam.sort(key=lambda x: x[1], reverse=True)  # Higher log_prob is better
             beam = new_beam[:beam_width]
-
-        # Select the best path from the beam (most probable path)
-        best_path, best_prob = max(beam, key=lambda x: x[1])
-
+        
+        # Select the best path from the beam (highest log probability)
+        best_path, best_log_prob = max(beam, key=lambda x: x[1])
+        
         # Convert tag indices to tag names
         tag_sequence = [self.idx2tag[tag_idx] for tag_idx in best_path]
         
         return tag_sequence
+
 
 
     def viterbi_decode(self, sequence):
@@ -496,20 +482,13 @@ class POSTagger():
         """
         return
 
-def add_quotes_if_missing(s):
-        # Check if the string starts with " and ends with "
-        if not s.startswith('"'):
-            s = '"' + s
-        if not s.endswith('"'):
-            s = s + '"'
-        return s
-
 if __name__ == "__main__":
     pos_tagger = POSTagger()
 
     train_data = load_data("data/train_x.csv", "data/train_y.csv")
     dev_data = load_data("data/dev_x.csv", "data/dev_y.csv")
     test_data = load_data("data/test_x.csv")
+    dev_data_x = load_data("data/dev_x.csv")
 
     pos_tagger.train(train_data)
 
@@ -532,4 +511,4 @@ if __name__ == "__main__":
     df_predictions = pd.DataFrame(results)
 
     # Write them to a file to update the leaderboard
-    df_predictions.to_csv('predictions.csv', index=False)
+    df_predictions.to_csv('predictions.csv', index=False, quoting=csv.QUOTE_ALL)

@@ -347,7 +347,7 @@ class POSTagger():
             else:
                 self.tag_embeddings[tag_idx] = np.zeros(self.embedding_dim)
 
-    def inference(self, sequence, method='beam'):
+    def inference(self, sequence, method='greedy'):
         """Tags a sequence with part of speech tags."""
         if method == 'greedy':
             return self.greedy_decode(sequence)
@@ -452,9 +452,7 @@ class POSTagger():
                         trans_prob = self.unigram_probs_ml[tag_idx]
                     
                     # Avoid log(0) by setting a minimum probability
-                    trans_prob = max(trans_prob, 1e-12)
                     emission_prob = emission_probs[tag_idx]
-                    emission_prob = max(emission_prob, 1e-12)
                     
                     # Compute total log probability
                     total_log_prob = log_prob + math.log(trans_prob) + math.log(emission_prob)
@@ -474,13 +472,57 @@ class POSTagger():
         
         return tag_sequence
 
-
-
     def viterbi_decode(self, sequence):
         """
         Viterbi decoding implementation.
         """
-        return
+        num_tags = len(self.all_tags)
+        sequence_length = len(sequence)
+        viterbi = np.zeros((sequence_length, num_tags))
+        backpointer = np.zeros((sequence_length, num_tags), dtype=int)
+
+        # Initialization
+        word_idx = self.word2idx.get(sequence[0], None)
+        if word_idx is None:
+            emission_probs = self.handle_unknown_word(sequence[0])
+        else:
+            emission_probs = self.emission_probs[:, word_idx]
+        viterbi[0, :] = np.log(self.unigram_probs_ml) + np.log(emission_probs)
+
+        # For t = 1 to T-1
+        for t in range(1, sequence_length):
+            word_idx = self.word2idx.get(sequence[t], None)
+            if word_idx is None:
+                emission_probs = self.handle_unknown_word(sequence[t])
+            else:
+                emission_probs = self.emission_probs[:, word_idx]
+            emission_log_probs = np.log(emission_probs)
+
+            for s in range(num_tags):
+                max_prob = None
+                max_state = None
+                for s_prev in range(num_tags):
+                    transition_prob_log = np.log(self.bigram_probs_ml[s_prev, s])
+                    prob = viterbi[t - 1, s_prev] + transition_prob_log + emission_log_probs[s]
+                    if (max_prob is None) or (prob > max_prob):
+                        max_prob = prob
+                        max_state = s_prev
+                viterbi[t, s] = max_prob
+                backpointer[t, s] = max_state
+
+        # Termination
+        best_last_state = np.argmax(viterbi[sequence_length - 1, :])
+
+        # Backtrack
+        best_path = [best_last_state]
+        for t in range(sequence_length - 1, 0, -1):
+            best_last_state = backpointer[t, best_last_state]
+            best_path.insert(0, best_last_state)
+
+        # Map indices to tags
+        tag_sequence = [self.idx2tag[state] for state in best_path]
+
+        return tag_sequence
 
 if __name__ == "__main__":
     pos_tagger = POSTagger()
@@ -505,10 +547,11 @@ if __name__ == "__main__":
     results = []
     for idx, tag in enumerate(test_predictions):
         # Ensure the tag is properly quoted
-        results.append({'id': idx, 'tag': str(tag)})
+        if (str(tag) != "<STOP>"):
+            results.append({'id': idx, 'tag': str(tag)})
 
     # Create a DataFrame with the predictions
     df_predictions = pd.DataFrame(results)
 
     # Write them to a file to update the leaderboard
-    df_predictions.to_csv('predictions.csv', index=False, quoting=csv.QUOTE_ALL)
+    df_predictions.to_csv('prediction.csv', index=False, quoting=csv.QUOTE_NONNUMERIC)

@@ -368,7 +368,7 @@ class POSTagger():
             else:
                 self.tag_embeddings[tag_idx] = np.zeros(self.embedding_dim)
 
-    def inference(self, sequence, method='greedy'):
+    def inference(self, sequence, method='beam'):
         """Tags a sequence with part of speech tags."""
         if method == 'greedy':
             return self.greedy_decode(sequence)
@@ -427,7 +427,7 @@ class POSTagger():
 
         return tag_sequence
     
-    def beam_search_decode(self, sequence, beam_width=2):
+    def beam_search_decode(self, sequence, beam_width=3):
         """
         Beam search decoding implementation.
         

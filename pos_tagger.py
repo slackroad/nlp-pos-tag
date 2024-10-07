@@ -122,7 +122,10 @@ class POSTagger():
         """
         self.unigram_probs_ml = self.unigram_counts / self.total_tags
         # Add-k smoothing
-        self.unigram_probs = (self.unigram_counts + self.k) / (self.total_tags + self.k * len(self.all_tags))
+        #self.unigram_probs = (self.unigram_counts + self.k) / (self.total_tags + self.k * len(self.all_tags))
+        #Laplace smoothing (k = 1)
+        #self.unigram_probs = (self.unigram_counts + 1) / (self.total_tags + len(self.all_tags))
+
 
     def get_bigrams(self):
         """
@@ -137,7 +140,9 @@ class POSTagger():
             else:
                 self.bigram_probs_ml[i, :] = 0
         # Add-k smoothing
-        self.bigram_probs = (self.bigram_counts + self.k) / (self.unigram_counts[:, None] + self.k * num_tags)
+        #self.bigram_probs = (self.bigram_counts + self.k) / (self.unigram_counts[:, None] + self.k * num_tags)
+        #Linear Interpolation (l2 and l3 should sum to 1)
+        #self.bigram_probs = 0.4 * self.bigram_probs_ml + 0.6 * self.unigram_probs_ml[None, :]
 
     def get_trigrams(self):
         """
@@ -153,7 +158,14 @@ class POSTagger():
                 else:
                     self.trigram_probs_ml[i, j, :] = 0
         # Add-k smoothing
-        self.trigram_probs = (self.trigram_counts + self.k) / (self.bigram_counts[:, :, None] + self.k * num_tags)
+        #self.trigram_probs = (self.trigram_counts + self.k) / (self.bigram_counts[:, :, None] + self.k * num_tags)
+        #Linear Interpolation (l1, l2 and l3 should sum to 1)
+        #self.trigram_probs = (
+        #    0.2 * self.trigram_probs_ml +
+        #    0.3 * self.bigram_probs_ml[:, :, None] +
+        #    0.5 * self.unigram_probs_ml[None, None, :]
+        #)
+
 
     def compute_transition_probs(self):
         """
@@ -360,6 +372,8 @@ class POSTagger():
         """Tags a sequence with part of speech tags."""
         if method == 'greedy':
             return self.greedy_decode(sequence)
+        elif method == 'beam':
+            return self.beam_search_decode(sequence)
         elif method == 'viterbi':
             return self.viterbi_decode(sequence)
         else:
@@ -412,12 +426,83 @@ class POSTagger():
             prev_tag_idx = best_tag_idx
 
         return tag_sequence
+    
+    def beam_search_decode(self, sequence, beam_width=2):
+        """
+        Beam search decoding implementation.
+        
+        :param sequence: The input sequence of words to tag.
+        :param beam_width: The number of top paths to retain at each step (k-best paths).
+        """
+        num_tags = len(self.all_tags)
+        
+        # Each element in the beam is a tuple of (path, probability)
+        # `path` is a list of tag indices, and `probability` is the accumulated probability of that path.
+        beam = [([], 1.0)]  # Start with an empty path with probability 1.0
+
+        for i, word in enumerate(sequence):
+            word_idx = self.word2idx.get(word, None)
+            if word_idx is None:
+                # Handle unknown word
+                emission_probs = self.handle_unknown_word(word)
+            else:
+                # Get emission probabilities for this word
+                emission_probs = self.emission_probs[:, word_idx]
+            
+            # To store all potential paths from the current beam
+            new_beam = []
+            
+            # Expand each path in the beam
+            for path, path_prob in beam:
+                # Last two tags in the current path
+                prev_prev_tag_idx = path[-2] if len(path) > 1 else None
+                prev_tag_idx = path[-1] if len(path) > 0 else None
+                
+                # Consider all possible next tags
+                for tag_idx in range(num_tags):
+                    # Compute transition probability
+                    if prev_prev_tag_idx is not None and prev_tag_idx is not None:
+                        trans_prob = self.transition_probs[prev_prev_tag_idx, prev_tag_idx, tag_idx]
+                    elif prev_tag_idx is not None:
+                        # Use bigram probability
+                        trans_prob = self.l2 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
+                                    self.l3 * self.unigram_probs_ml[tag_idx]
+                    else:
+                        # Use unigram probability
+                        trans_prob = self.unigram_probs_ml[tag_idx]
+
+                    # Compute total probability
+                    prob = trans_prob * emission_probs[tag_idx]
+
+                    # Add the new path with its updated probability
+                    new_beam.append((path + [tag_idx], prob))
+            
+            # Sort the new beam by probability and retain only the top `beam_width` paths
+            new_beam.sort(key=lambda x: x[1], reverse=True)
+            beam = new_beam[:beam_width]
+
+        # Select the best path from the beam (most probable path)
+        best_path, best_prob = max(beam, key=lambda x: x[1])
+
+        # Convert tag indices to tag names
+        tag_sequence = [self.idx2tag[tag_idx] for tag_idx in best_path]
+        
+        return tag_sequence
+
 
     def viterbi_decode(self, sequence):
         """
         Viterbi decoding implementation.
         """
         return
+
+def add_quotes_if_missing(s):
+        # Check if the string starts with " and ends with "
+        if not s.startswith('"'):
+            s = '"' + s
+        if not s.endswith('"'):
+            s = s + '"'
+        return s
 
 if __name__ == "__main__":
     pos_tagger = POSTagger()
@@ -435,9 +520,16 @@ if __name__ == "__main__":
     test_predictions = []
     for sentence in test_data:
         tags = pos_tagger.inference(sentence)
-        test_predictions.append(tags)
+        test_predictions.extend(tags)
 
     # Write the predictions to a file
-    with open("test_predictions.txt", "w") as f:
-        for tags in test_predictions:
-            f.write(" ".join(tags) + "\n")
+    results = []
+    for idx, tag in enumerate(test_predictions):
+        # Ensure the tag is properly quoted
+        results.append({'id': idx, 'tag': str(tag)})
+
+    # Create a DataFrame with the predictions
+    df_predictions = pd.DataFrame(results)
+
+    # Write them to a file to update the leaderboard
+    df_predictions.to_csv('predictions.csv', index=False)

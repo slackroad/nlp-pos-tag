@@ -117,6 +117,9 @@ class POSTagger():
         self.l1 = 0.1
         self.l2 = 0.3
         self.l3 = 0.6
+        self.suffix_tag_counts = {}
+        self.suffix_total_counts = {}
+        self.suffix_length = 3  # You can adjust this value based on your data
 
     def get_unigrams(self):
         """
@@ -171,6 +174,7 @@ class POSTagger():
             tag_count = self.unigram_counts[i]
             self.emission_probs[i, :] = (self.emission_counts[i, :] + self.k) / (tag_count + self.k * num_words)
 
+    '''
     def load_glove_embeddings(self, glove_file='glove.6B.50d.txt'):
         """
         Load GloVe embeddings.
@@ -188,6 +192,7 @@ class POSTagger():
                 self.glove_embeddings[word] = vector
 
         print("GloVe embeddings loaded.")
+    '''
 
     def train(self, data):
         """Trains the model by computing transition and emission probabilities.
@@ -252,12 +257,33 @@ class POSTagger():
         self.compute_transition_probs()
         self.get_emissions()
 
+        self.suffix_tag_counts = {}
+        self.suffix_total_counts = {}
+        self.suffix_length = 3 # Adjust as needed
+
+        # Count unigrams, bigrams, trigrams, emissions, and collect suffix statistics
+        for sent, tag_seq in zip(sentences, tags):
+            for i in range(len(tag_seq)):
+                tag_idx = self.tag2idx[tag_seq[i]]
+                word_idx = self.word2idx[sent[i]]
+
+                # ... existing counts ...
+
+                # Collect suffix statistics
+                word = sent[i]
+                suffix = word[-self.suffix_length:] if len(word) >= self.suffix_length else word
+                if suffix not in self.suffix_tag_counts:
+                    self.suffix_tag_counts[suffix] = np.zeros(num_tags)
+                    self.suffix_total_counts[suffix] = 0
+                self.suffix_tag_counts[suffix][tag_idx] += 1
+                self.suffix_total_counts[suffix] += 1
+
         # Load GloVe embeddings for unknown words only
-        glove_path = 'glove.6B.50d.txt'
-        if os.path.exists(glove_path):
-            self.load_glove_embeddings(glove_file=glove_path)
-        else:
-            print("GloVe embeddings not found. Please ensure the GloVe file is in the current directory.")
+        #glove_path = 'glove.6B.50d.txt'
+        #if os.path.exists(glove_path):
+        #    self.load_glove_embeddings(glove_file=glove_path)
+        #else:
+        #   print("GloVe embeddings not found. Please ensure the GloVe file is in the current directory.")
 
     def sequence_probability(self, sequence, tags):
         """Computes the probability of a tagged sequence given the emission/transition probabilities."""
@@ -296,6 +322,11 @@ class POSTagger():
         """
         Handle unknown words by estimating emission probabilities using GloVe embeddings.
         """
+
+        """
+        Handle unknown words by estimating emission probabilities using GloVe embeddings.
+        """
+        '''
         num_tags = len(self.all_tags)
         # If GloVe embeddings are available
         if word in self.glove_embeddings:
@@ -323,7 +354,23 @@ class POSTagger():
         emission_probs /= np.sum(emission_probs)
 
         return emission_probs
+        '''
+        num_tags = len(self.all_tags)
+        suffix = word[-self.suffix_length:] if len(word) >= self.suffix_length else word
 
+        if suffix in self.suffix_tag_counts:
+            tag_counts = self.suffix_tag_counts[suffix]
+            total_count = self.suffix_total_counts[suffix]
+            emission_probs = (tag_counts + self.k) / (total_count + self.k * num_tags)
+        else:
+            # If the suffix is unseen, default to uniform distribution or prior probabilities
+            #emission_probs = self.unigram_probs_ml  # Using prior tag probabilities
+            # Alternatively, use uniform distribution:
+            emission_probs = np.ones(num_tags) / num_tags
+
+        return emission_probs
+
+    '''
     def compute_tag_embeddings(self):
         """
         Computes average embeddings for each tag based on words in the training data.
@@ -346,8 +393,8 @@ class POSTagger():
                 self.tag_embeddings[tag_idx] /= tag_counts[tag_idx]
             else:
                 self.tag_embeddings[tag_idx] = np.zeros(self.embedding_dim)
-
-    def inference(self, sequence, method='greedy'):
+    '''
+    def inference(self, sequence, method='viterbi'):
         """Tags a sequence with part of speech tags."""
         if method == 'greedy':
             return self.greedy_decode(sequence)

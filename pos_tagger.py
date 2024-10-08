@@ -99,6 +99,7 @@ class POSTagger():
         self.unigram_counts = None
         self.bigram_counts = None
         self.trigram_counts = None
+        self.quadgram_counts = None
         self.emission_counts = None
         self.all_tags = []
         self.tag2idx = {}
@@ -114,9 +115,10 @@ class POSTagger():
         # Smoothing parameters
         self.k = 1e-6  # Add-k smoothing parameter
         # Linear interpolation weights (should sum to 1)
-        self.l1 = 0.1
-        self.l2 = 0.3
-        self.l3 = 0.6
+        self.l1 = 0.05  
+        self.l2 = 0.15  
+        self.l3 = 0.3   
+        self.l4 = 0.5   
         self.suffix_tag_counts = {}
         self.suffix_total_counts = {}
         self.suffix_length = 3  # You can adjust this value based on your data
@@ -149,19 +151,32 @@ class POSTagger():
         # Add-k smoothing applied directly
         self.trigram_probs_ml = (self.trigram_counts + self.k) / (bigram_counts + self.k * num_tags)
 
+    def get_quadgrams(self):
+        """
+        Computes quadgram probabilities with Add-k smoothing applied directly onto quadgram_probs_ml.
+        """
+        num_tags = len(self.all_tags)
+        # Reshape trigram counts to match quadgram_counts dimensions
+        trigram_counts = self.trigram_counts.reshape(num_tags, num_tags, num_tags, 1)
+        # Add-k smoothing applied directly
+        self.quadgram_probs_ml = (self.quadgram_counts + self.k) / (trigram_counts + self.k * num_tags)
+
+
     def compute_transition_probs(self):
         """
         Computes the smoothed transition probabilities using linear interpolation.
         """
         num_tags = len(self.all_tags)
-        self.transition_probs = np.zeros((num_tags, num_tags, num_tags))
+        self.transition_probs = np.zeros((num_tags, num_tags, num_tags, num_tags))
         for i in range(num_tags):
             for j in range(num_tags):
                 for k in range(num_tags):
-                    p1 = self.trigram_probs_ml[i, j, k]
-                    p2 = self.bigram_probs_ml[j, k]
-                    p3 = self.unigram_probs_ml[k]
-                    self.transition_probs[i, j, k] = self.l1 * p1 + self.l2 * p2 + self.l3 * p3
+                    for l in range(num_tags):
+                        p1 = self.quadgram_probs_ml[i, j, k, l]
+                        p2 = self.trigram_probs_ml[j, k, l]
+                        p3 = self.bigram_probs_ml[k, l]
+                        p4 = self.unigram_probs_ml[l]
+                        self.transition_probs[i, j, k, l] = self.l1 * p1 + self.l2 * p2 + self.l3 * p3 + self.l4 * p4
 
     def get_emissions(self):
         """
@@ -222,6 +237,8 @@ class POSTagger():
         self.unigram_counts = np.zeros(num_tags)
         self.bigram_counts = np.zeros((num_tags, num_tags))
         self.trigram_counts = np.zeros((num_tags, num_tags, num_tags))
+        self.quadgram_counts = np.zeros((num_tags, num_tags, num_tags, num_tags))
+
         self.emission_counts = np.zeros((num_tags, num_words))
 
         # Count unigrams, bigrams, trigrams, and emissions
@@ -247,6 +264,13 @@ class POSTagger():
                     prev_tag_idx = self.tag2idx[tag_seq[i - 1]]
                     self.trigram_counts[prev_prev_tag_idx, prev_tag_idx, tag_idx] += 1
 
+                # Quadgram:
+                if i > 2:
+                    prev_prev_prev_tag_idx = self.tag2idx[tag_seq[i - 3]]
+                    prev_prev_tag_idx = self.tag2idx[tag_seq[i - 2]]
+                    prev_tag_idx = self.tag2idx[tag_seq[i - 1]]
+                    self.quadgram_counts[prev_prev_prev_tag_idx, prev_prev_tag_idx, prev_tag_idx, tag_idx] += 1
+
         self.total_tags = np.sum(self.unigram_counts)
         self.total_tokens = np.sum(self.emission_counts)
 
@@ -254,6 +278,7 @@ class POSTagger():
         self.get_unigrams()
         self.get_bigrams()
         self.get_trigrams()
+        self.get_quadgrams()
         self.compute_transition_probs()
         self.get_emissions()
 
@@ -286,7 +311,7 @@ class POSTagger():
         #   print("GloVe embeddings not found. Please ensure the GloVe file is in the current directory.")
 
     def sequence_probability(self, sequence, tags):
-        """Computes the probability of a tagged sequence given the emission/transition probabilities."""
+        """Computes the probability of a tagged seq uence given the emission/transition probabilities."""
         prob = 1.0
         num_tags = len(self.all_tags)
         for i in range(len(sequence)):
@@ -295,22 +320,29 @@ class POSTagger():
             tag = tags[i]
             tag_idx = self.tag2idx[tag]
 
-            # Emission probability
             if word_idx is not None:
                 emission_prob = self.emission_probs[tag_idx, word_idx]
             else:
                 emission_probs = self.handle_unknown_word(word)
                 emission_prob = emission_probs[tag_idx]
 
-            # Transition probability
-            if i > 1:
+
+            # Emission probability
+            if i > 2:
+                prev_prev_prev_tag_idx = self.tag2idx[tags[i - 3]]
                 prev_prev_tag_idx = self.tag2idx[tags[i - 2]]
                 prev_tag_idx = self.tag2idx[tags[i - 1]]
-                transition_prob = self.transition_probs[prev_prev_tag_idx, prev_tag_idx, tag_idx]
+                transition_prob = self.transition_probs[prev_prev_prev_tag_idx, prev_prev_tag_idx, prev_tag_idx, tag_idx]
+            elif i > 1:
+                prev_prev_tag_idx = self.tag2idx[tags[i - 2]]
+                prev_tag_idx = self.tag2idx[tags[i - 1]]
+                transition_prob = self.l2 * self.trigram_probs_ml[prev_prev_tag_idx, prev_tag_idx, tag_idx] + \
+                                self.l3 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
+                                self.l4 * self.unigram_probs_ml[tag_idx]
             elif i > 0:
                 prev_tag_idx = self.tag2idx[tags[i - 1]]
-                transition_prob = self.l2 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
-                                  self.l3 * self.unigram_probs_ml[tag_idx]
+                transition_prob = self.l3 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
+                                self.l4 * self.unigram_probs_ml[tag_idx]
             else:
                 transition_prob = self.unigram_probs_ml[tag_idx]
 
@@ -394,7 +426,7 @@ class POSTagger():
             else:
                 self.tag_embeddings[tag_idx] = np.zeros(self.embedding_dim)
     '''
-    def inference(self, sequence, method='viterbi'):
+    def inference(self, sequence, method='greedy'):
         """Tags a sequence with part of speech tags."""
         if method == 'greedy':
             return self.greedy_decode(sequence)
@@ -411,6 +443,7 @@ class POSTagger():
         """
         num_tags = len(self.all_tags)
         tag_sequence = []
+        prev_prev_prev_tag_idx = None
         prev_prev_tag_idx = None
         prev_tag_idx = None
 
@@ -428,12 +461,17 @@ class POSTagger():
 
             for tag_idx in range(num_tags):
                 # Compute transition probability
-                if prev_prev_tag_idx is not None and prev_tag_idx is not None:
-                    trans_prob = self.transition_probs[prev_prev_tag_idx, prev_tag_idx, tag_idx]
+                if prev_prev_prev_tag_idx is not None and prev_prev_tag_idx is not None and prev_tag_idx is not None:
+                    trans_prob = self.transition_probs[prev_prev_prev_tag_idx, prev_prev_tag_idx, prev_tag_idx, tag_idx]
+                elif prev_prev_tag_idx is not None and prev_tag_idx is not None:
+                    # Use trigram probability
+                    trans_prob = self.l2 * self.trigram_probs_ml[prev_prev_tag_idx, prev_tag_idx, tag_idx] + \
+                                self.l3 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
+                                self.l4 * self.unigram_probs_ml[tag_idx]
                 elif prev_tag_idx is not None:
                     # Use bigram probability
-                    trans_prob = self.l2 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
-                                 self.l3 * self.unigram_probs_ml[tag_idx]
+                    trans_prob = self.l3 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
+                                self.l4 * self.unigram_probs_ml[tag_idx]
                 else:
                     # Use unigram probability
                     trans_prob = self.unigram_probs_ml[tag_idx]
@@ -448,6 +486,7 @@ class POSTagger():
             tag_sequence.append(self.idx2tag[best_tag_idx])
 
             # Update previous tags
+            prev_prev_prev_tag_idx = prev_prev_tag_idx
             prev_prev_tag_idx = prev_tag_idx
             prev_tag_idx = best_tag_idx
 
@@ -482,18 +521,24 @@ class POSTagger():
             # Expand each path in the beam
             for path, log_prob in beam:
                 # Last two tags in the current path
+                prev_prev_prev_tag_idx = path[-3] if len(path) > 2 else None
                 prev_prev_tag_idx = path[-2] if len(path) > 1 else None
                 prev_tag_idx = path[-1] if len(path) > 0 else None
                 
                 # Consider all possible next tags
                 for tag_idx in range(num_tags):
                     # Compute transition probability
-                    if prev_prev_tag_idx is not None and prev_tag_idx is not None:
-                        trans_prob = self.transition_probs[prev_prev_tag_idx, prev_tag_idx, tag_idx]
+                    if prev_prev_prev_tag_idx is not None and prev_prev_tag_idx is not None and prev_tag_idx is not None:
+                        trans_prob = self.transition_probs[prev_prev_prev_tag_idx, prev_prev_tag_idx, prev_tag_idx, tag_idx]
+                    elif prev_prev_tag_idx is not None and prev_tag_idx is not None:
+                        # Use trigram probability
+                        trans_prob = self.l2 * self.trigram_probs_ml[prev_prev_tag_idx, prev_tag_idx, tag_idx] + \
+                                    self.l3 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
+                                    self.l4 * self.unigram_probs_ml[tag_idx]
                     elif prev_tag_idx is not None:
                         # Use bigram probability
-                        trans_prob = self.l2 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
-                                    self.l3 * self.unigram_probs_ml[tag_idx]
+                        trans_prob = self.l3 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
+                                    self.l4 * self.unigram_probs_ml[tag_idx]
                     else:
                         # Use unigram probability
                         trans_prob = self.unigram_probs_ml[tag_idx]

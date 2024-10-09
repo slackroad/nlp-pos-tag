@@ -5,6 +5,7 @@ from tagger_utils import *
 import os
 import math
 import csv
+from sklearn.metrics import f1_score
 
 """ Contains the part of speech tagger class. """
 
@@ -426,7 +427,7 @@ class POSTagger():
             else:
                 self.tag_embeddings[tag_idx] = np.zeros(self.embedding_dim)
     '''
-    def inference(self, sequence, method='greedy'):
+    def inference(self, sequence, method='viterbi'):
         """Tags a sequence with part of speech tags."""
         if method == 'greedy':
             return self.greedy_decode(sequence)
@@ -637,13 +638,39 @@ if __name__ == "__main__":
 
     # Write the predictions to a file
     results = []
+    new_idx = 0
     for idx, tag in enumerate(test_predictions):
         # Ensure the tag is properly quoted
         if (str(tag) != "<STOP>"):
-            results.append({'id': idx, 'tag': str(tag)})
+            results.append({'id': new_idx, 'tag': str(tag)})
+            new_idx += 1
+
 
     # Create a DataFrame with the predictions
     df_predictions = pd.DataFrame(results)
 
     # Write them to a file to update the leaderboard
-    df_predictions.to_csv('prediction.csv', index=False, quoting=csv.QUOTE_NONNUMERIC)
+    df_predictions.to_csv('test_y.csv', index=False, quoting=csv.QUOTE_NONNUMERIC)
+    '''
+    pred = pd.read_csv('prediction.csv', index_col = "id")
+    dev  = pd.read_csv('data/dev_y.csv',  index_col = "id")
+
+    
+    pred.columns = ["predicted"]
+    dev.columns  = ["actual"]
+
+    data = dev.join(pred)
+    print(data.tail())
+    print(data.dtypes)
+    print("Data types in y_true:", set(type(label) for label in data.actual))
+    print("Data types in y_pred:", set(type(label) for label in data.predicted))
+    i = 0
+    for label in data.predicted:
+        i += 1
+        if type(label) == float:
+            print(label)
+            print(i)
+            break
+    '''
+ 
+   

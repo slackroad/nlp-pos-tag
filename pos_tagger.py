@@ -430,7 +430,7 @@ class POSTagger():
     def inference(self, sequence, method='viterbi'):
         """Tags a sequence with part of speech tags."""
         if method == 'greedy':
-            return self.greedy_decode(sequence)
+            return self.beam_search_decode(sequence, beam_width=1)
         elif method == 'beam':
             return self.beam_search_decode(sequence)
         elif method == 'viterbi':
@@ -438,60 +438,6 @@ class POSTagger():
         else:
             raise ValueError('Unknown decoding method: {}'.format(method))
 
-    def greedy_decode(self, sequence):
-        """
-        Greedy decoding implementation.
-        """
-        num_tags = len(self.all_tags)
-        tag_sequence = []
-        prev_prev_prev_tag_idx = None
-        prev_prev_tag_idx = None
-        prev_tag_idx = None
-
-        for i, word in enumerate(sequence):
-            word_idx = self.word2idx.get(word, None)
-            if word_idx is None:
-                # Handle unknown word
-                emission_probs = self.handle_unknown_word(word)
-            else:
-                # Get emission probabilities for this word
-                emission_probs = self.emission_probs[:, word_idx]
-
-            max_prob = 0
-            best_tag_idx = None
-
-            for tag_idx in range(num_tags):
-                # Compute transition probability
-                if prev_prev_prev_tag_idx is not None and prev_prev_tag_idx is not None and prev_tag_idx is not None:
-                    trans_prob = self.transition_probs[prev_prev_prev_tag_idx, prev_prev_tag_idx, prev_tag_idx, tag_idx]
-                elif prev_prev_tag_idx is not None and prev_tag_idx is not None:
-                    # Use trigram probability
-                    trans_prob = self.l2 * self.trigram_probs_ml[prev_prev_tag_idx, prev_tag_idx, tag_idx] + \
-                                self.l3 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
-                                self.l4 * self.unigram_probs_ml[tag_idx]
-                elif prev_tag_idx is not None:
-                    # Use bigram probability
-                    trans_prob = self.l3 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
-                                self.l4 * self.unigram_probs_ml[tag_idx]
-                else:
-                    # Use unigram probability
-                    trans_prob = self.unigram_probs_ml[tag_idx]
-
-                # Compute total probability
-                prob = trans_prob * emission_probs[tag_idx]
-
-                if prob > max_prob:
-                    max_prob = prob
-                    best_tag_idx = tag_idx
-
-            tag_sequence.append(self.idx2tag[best_tag_idx])
-
-            # Update previous tags
-            prev_prev_prev_tag_idx = prev_prev_tag_idx
-            prev_prev_tag_idx = prev_tag_idx
-            prev_tag_idx = best_tag_idx
-
-        return tag_sequence
 
     def beam_search_decode(self, sequence, beam_width=3):
         """

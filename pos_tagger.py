@@ -6,6 +6,8 @@ import os
 import math
 import csv
 from sklearn.metrics import f1_score
+from tqdm import tqdm 
+
 
 """ Contains the part of speech tagger class. """
 
@@ -82,7 +84,7 @@ def evaluate(data, model):
 
 def infer_sentences(model, sentences, idx_offset):
     predictions = {}
-    for i, sentence in enumerate(sentences):
+    for i, sentence in tqdm(enumerate(sentences)):
         pred_tags = model.inference(sentence)
         predictions[idx_offset + i] = pred_tags
     return predictions
@@ -447,81 +449,65 @@ class POSTagger():
         tag_sequence = [self.idx2tag[state] for state in best_path]
 
         return tag_sequence
-    
+
     def viterbi_trigram(self, sequence):
         """
-        Viterbi decoding implementation with trigram transitions.
+        Implements the Viterbi algorithm using trigrams in a vectorized way.
         """
         num_tags = len(self.all_tags)
         sequence_length = len(sequence)
-        viterbi = np.zeros((sequence_length, num_tags, num_tags))  # For trigram, store previous two tags
-        backpointer = np.zeros((sequence_length, num_tags, num_tags), dtype=int)
 
-        # Initialize DP with first two words:
-        word_idx_0 = self.word2idx.get(sequence[0], None)
-        word_idx_1 = self.word2idx.get(sequence[1], None) if sequence_length > 1 else None
+        # Initialize the Viterbi table (DP table) and backpointer
+        viterbi = np.zeros((sequence_length, num_tags, num_tags))  # log probabilities, start with -inf
+        backpointer = np.zeros((sequence_length, num_tags, num_tags), dtype=int)  # stores the best previous states
 
-        if word_idx_0 is None:
+        # First token initialization
+        word_idx = self.word2idx.get(sequence[0], None)
+        if word_idx is None:
             emission_probs_0 = self.handle_unknown_word(sequence[0])
         else:
-            emission_probs_0 = self.emission_probs[:, word_idx_0]
-        if word_idx_1 is None:
-            emission_probs_1 = self.handle_unknown_word(sequence[1]) if sequence_length > 1 else np.ones(num_tags)
-        else:
-            emission_probs_1 = self.emission_probs[:, word_idx_1] if sequence_length > 1 else np.ones(num_tags)
+            emission_probs_0 = self.emission_probs[:, word_idx]
 
-        # Initialize for the first two tokens (start of trigram sequence)
-        for s1 in range(num_tags):  # First tag
-            for s2 in range(num_tags):  # Second tag
-                if sequence_length > 1:
-                    viterbi[1, s1, s2] = (
-                        np.log(self.unigram_probs_ml[s1]) +
-                        np.log(self.bigram_probs_ml[s1, s2]) +
-                        np.log(emission_probs_0[s1]) +
-                        np.log(emission_probs_1[s2])
-                    )
-                else:
-                    viterbi[0, s1, s2] = (
-                        np.log(self.unigram_probs_ml[s1]) +
-                        np.log(emission_probs_0[s1])
-                    )
+        viterbi[0, :, :] = np.log(self.unigram_probs_ml) + np.log(self.bigram_probs_ml) + np.log(emission_probs_0)
 
-        # Dynamic programming to fill in the viterbi table for the rest of the sequence
-        for t in range(2, sequence_length):
+        # Dynamic programming for the rest of the sequence
+        for t in range(1, sequence_length):
             word_idx = self.word2idx.get(sequence[t], None)
             if word_idx is None:
-                emission_probs = self.handle_unknown_word(sequence[t])
+                emission_probs_t = self.handle_unknown_word(sequence[t])
             else:
-                emission_probs = self.emission_probs[:, word_idx]
-            emission_log_probs = np.log(emission_probs)
+                emission_probs_t = self.emission_probs[:, word_idx]
+            emission_log_probs = np.log(emission_probs_t)
 
-            for s2 in range(num_tags):  # Current state
-                for s1 in range(num_tags):  # Previous state
+            # Vectorized update of viterbi table for each token
+            for t2 in range(num_tags):  # tag for t-1
+                for t3 in range(num_tags):  # tag for t
                     max_prob = None
                     max_state = None
-                    for s0 in range(num_tags):  # Previous-previous state
-                        trigram_transition_log = np.log(self.trigram_probs_ml[s0, s1, s2])
-                        prob = viterbi[t - 1, s0, s1] + trigram_transition_log + emission_log_probs[s2]
-                        if (max_prob is None) or (prob > max_prob):
-                            max_prob = prob
-                            max_state = s0
-                    viterbi[t, s1, s2] = max_prob
-                    backpointer[t, s1, s2] = max_state
+                    for t_prev in range(num_tags):
+                        transition_probs_t = np.log(self.trigram_probs_ml[t_prev, t2, t3])
+                        prob_t3 = viterbi[t - 1, t2, t_prev] + transition_probs_t + emission_log_probs[t3]
+                        if max_prob is None or (prob_t3 > max_prob):
+                            max_prob = prob_t3
+                            max_state = t_prev
+                    viterbi[t, t2, t3] = max_prob
+                    backpointer[t, t2, t3] = max_state
+                    
 
-        # Find the best last two states
-        best_last_s1, best_last_s2 = np.unravel_index(np.argmax(viterbi[sequence_length - 1]), (num_tags, num_tags))
 
-        # Backtrack to find the best path
-        best_path = [best_last_s1, best_last_s2]
-        for t in range(sequence_length - 1, 1, -1):
-            best_last_s0 = backpointer[t, best_last_s1, best_last_s2]
-            best_path.insert(0, best_last_s0)
-            best_last_s2 = best_last_s1
-            best_last_s1 = best_last_s0
+        # Termination: find the most probable end state
+        best_last_state = np.unravel_index(np.argmax(viterbi[sequence_length - 1]), viterbi[sequence_length - 1].shape)
 
-        tag_sequence = [self.idx2tag[state] for state in best_path]
+        # Backtrack to find the best tag sequence
+        best_path = [best_last_state[1], best_last_state[0]]
+        for t in range(sequence_length - 2, 0, -1):
+            best_tag = backpointer[t + 1, best_path[-2], best_path[-1]]
+            best_path.insert(0, best_tag)
 
+        # Convert indices back to tags
+        tag_sequence = [self.idx2tag[tag_idx] for tag_idx in best_path]
         return tag_sequence
+
 
 
 if __name__ == "__main__":
@@ -539,7 +525,7 @@ if __name__ == "__main__":
 
     # Predict tags for the test set
     test_predictions = []
-    for sentence in dev_data_x:
+    for sentence in test_data:
         tags = pos_tagger.inference(sentence)
         test_predictions.extend(tags)
 

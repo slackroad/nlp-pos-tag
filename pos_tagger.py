@@ -96,7 +96,6 @@ def compute_prob(model, sentences, tags_list, idx_offset):
 
 class POSTagger():
     def __init__(self):
-        """Initializes the tagger model parameters and anything else necessary. """
         self.unigram_counts = None
         self.bigram_counts = None
         self.trigram_counts = None
@@ -113,8 +112,9 @@ class POSTagger():
         self.total_tags = 0
         self.total_tokens = 0
         self.glove_embeddings = {}
-        # Smoothing parameters
-        self.k = 1e-6  # Add-k smoothing parameter
+
+        self.k = 1e-5  # Add-k smoothing parameter
+
         # Linear interpolation weights (should sum to 1)
         self.l1 = 0.05  
         self.l2 = 0.15  
@@ -122,50 +122,51 @@ class POSTagger():
         self.l4 = 0.5   
         self.suffix_tag_counts = {}
         self.suffix_total_counts = {}
-        self.suffix_length = 3  # You can adjust this value based on your data
+        self.suffix_length = 3 
 
     def get_unigrams(self):
         """
-        Computes unigram probabilities with Add-k smoothing applied directly onto unigram_probs_ml.
+        Computes unigram probabilities
         """
         num_tags = len(self.all_tags)
-        # Add-k smoothing applied directly
+
+        # Add-k smoothing:
         self.unigram_probs_ml = (self.unigram_counts + self.k) / (self.total_tags + self.k * num_tags)
 
     def get_bigrams(self):
         """
-        Computes bigram probabilities with Add-k smoothing applied directly onto bigram_probs_ml.
+        Computes bigram probabilities
         """
         num_tags = len(self.all_tags)
-        # Reshape unigram counts to match bigram_counts dimensions
         unigram_counts = self.unigram_counts.reshape(-1, 1)
-        # Add-k smoothing applied directly
+
+        # Add-k smoothing:
         self.bigram_probs_ml = (self.bigram_counts + self.k) / (unigram_counts + self.k * num_tags)
 
     def get_trigrams(self):
         """
-        Computes trigram probabilities with Add-k smoothing applied directly onto trigram_probs_ml.
+        Computes trigram probabilities
         """
         num_tags = len(self.all_tags)
-        # Reshape bigram counts to match trigram_counts dimensions
         bigram_counts = self.bigram_counts.reshape(num_tags, num_tags, 1)
-        # Add-k smoothing applied directly
+
+        # Add-k smoothing:
         self.trigram_probs_ml = (self.trigram_counts + self.k) / (bigram_counts + self.k * num_tags)
 
     def get_quadgrams(self):
         """
-        Computes quadgram probabilities with Add-k smoothing applied directly onto quadgram_probs_ml.
+        Computes quadgram probabilities 
         """
         num_tags = len(self.all_tags)
-        # Reshape trigram counts to match quadgram_counts dimensions
         trigram_counts = self.trigram_counts.reshape(num_tags, num_tags, num_tags, 1)
-        # Add-k smoothing applied directly
+
+        # Add-k smoothing:
         self.quadgram_probs_ml = (self.quadgram_counts + self.k) / (trigram_counts + self.k * num_tags)
 
 
     def compute_transition_probs(self):
         """
-        Computes the smoothed transition probabilities using linear interpolation.
+        Computes the smoothed transition probabilities + linear interpolation
         """
         num_tags = len(self.all_tags)
         self.transition_probs = np.zeros((num_tags, num_tags, num_tags, num_tags))
@@ -181,7 +182,7 @@ class POSTagger():
 
     def get_emissions(self):
         """
-        Computes emission probabilities with Add-k smoothing.
+        Computes emission probabilities + add-k smoothing
         """
         num_tags = len(self.all_tags)
         num_words = len(self.vocab)
@@ -190,25 +191,6 @@ class POSTagger():
             tag_count = self.unigram_counts[i]
             self.emission_probs[i, :] = (self.emission_counts[i, :] + self.k) / (tag_count + self.k * num_words)
 
-    '''
-    def load_glove_embeddings(self, glove_file='glove.6B.50d.txt'):
-        """
-        Load GloVe embeddings.
-        """
-        print("Loading GloVe embeddings for unknown words...")
-        embedding_dim = 50 
-        self.embedding_dim = embedding_dim
-        self.glove_embeddings = {}
-
-        with open(glove_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                values = line.strip().split()
-                word = values[0]
-                vector = np.asarray(values[1:], dtype='float32')
-                self.glove_embeddings[word] = vector
-
-        print("GloVe embeddings loaded.")
-    '''
 
     def train(self, data):
         """Trains the model by computing transition and emission probabilities.
@@ -216,22 +198,19 @@ class POSTagger():
         You should also experiment:
             - smoothing.
             - N-gram models with varying N.
-
         """
         self.data = data
         sentences, tags = data
 
-        # Build the vocabulary
         self.vocab = set([w for s in sentences for w in s])
         self.word2idx = {w: i for i, w in enumerate(self.vocab)}
         self.idx2word = {i: w for w, i in self.word2idx.items()}
 
-        # Build tag mappings
         self.all_tags = list(set([t for tag_seq in tags for t in tag_seq]))
         self.tag2idx = {self.all_tags[i]: i for i in range(len(self.all_tags))}
         self.idx2tag = {v: k for k, v in self.tag2idx.items()}
 
-        # Initialize counts
+        # Initialize:
         num_tags = len(self.all_tags)
         num_words = len(self.vocab)
 
@@ -239,19 +218,16 @@ class POSTagger():
         self.bigram_counts = np.zeros((num_tags, num_tags))
         self.trigram_counts = np.zeros((num_tags, num_tags, num_tags))
         self.quadgram_counts = np.zeros((num_tags, num_tags, num_tags, num_tags))
-
         self.emission_counts = np.zeros((num_tags, num_words))
 
-        # Count unigrams, bigrams, trigrams, and emissions
+        # Count:
         for sent, tag_seq in zip(sentences, tags):
             for i in range(len(tag_seq)):
                 tag_idx = self.tag2idx[tag_seq[i]]
                 word_idx = self.word2idx[sent[i]]
 
-                # Unigram:
                 self.unigram_counts[tag_idx] += 1
 
-                # Emission:
                 self.emission_counts[tag_idx, word_idx] += 1
 
                 # Bigram:
@@ -275,7 +251,7 @@ class POSTagger():
         self.total_tags = np.sum(self.unigram_counts)
         self.total_tokens = np.sum(self.emission_counts)
 
-        # Apply smoothing and compute probabilities
+        # Apply smoothing, compute probabilities
         self.get_unigrams()
         self.get_bigrams()
         self.get_trigrams()
@@ -293,8 +269,6 @@ class POSTagger():
                 tag_idx = self.tag2idx[tag_seq[i]]
                 word_idx = self.word2idx[sent[i]]
 
-                # ... existing counts ...
-
                 # Collect suffix statistics
                 word = sent[i]
                 suffix = word[-self.suffix_length:] if len(word) >= self.suffix_length else word
@@ -304,15 +278,8 @@ class POSTagger():
                 self.suffix_tag_counts[suffix][tag_idx] += 1
                 self.suffix_total_counts[suffix] += 1
 
-        # Load GloVe embeddings for unknown words only
-        #glove_path = 'glove.6B.50d.txt'
-        #if os.path.exists(glove_path):
-        #    self.load_glove_embeddings(glove_file=glove_path)
-        #else:
-        #   print("GloVe embeddings not found. Please ensure the GloVe file is in the current directory.")
-
     def sequence_probability(self, sequence, tags):
-        """Computes the probability of a tagged seq uence given the emission/transition probabilities."""
+        """Computes the probability of a tagged sequence"""
         prob = 1.0
         num_tags = len(self.all_tags)
         for i in range(len(sequence)):
@@ -327,8 +294,6 @@ class POSTagger():
                 emission_probs = self.handle_unknown_word(word)
                 emission_prob = emission_probs[tag_idx]
 
-
-            # Emission probability
             if i > 2:
                 prev_prev_prev_tag_idx = self.tag2idx[tags[i - 3]]
                 prev_prev_tag_idx = self.tag2idx[tags[i - 2]]
@@ -352,42 +317,7 @@ class POSTagger():
         return prob
 
     def handle_unknown_word(self, word):
-        """
-        Handle unknown words by estimating emission probabilities using GloVe embeddings.
-        """
-
-        """
-        Handle unknown words by estimating emission probabilities using GloVe embeddings.
-        """
-        '''
-        num_tags = len(self.all_tags)
-        # If GloVe embeddings are available
-        if word in self.glove_embeddings:
-            word_embedding = self.glove_embeddings[word]
-        else:
-            # For words not in GloVe, use a zero vector
-            word_embedding = np.zeros(self.embedding_dim)
-
-        # Estimate emission probabilities based on similarity with tag embeddings
-        # For simplicity, let's assume each tag has an average embedding of words associated with it
-        # We'll precompute this if not already done
-        if not hasattr(self, 'tag_embeddings'):
-            self.compute_tag_embeddings()
-
-        emission_scores = np.zeros(num_tags)
-        for tag_idx in range(num_tags):
-            tag_embedding = self.tag_embeddings[tag_idx]
-            # Compute cosine similarity
-            similarity = np.dot(word_embedding, tag_embedding) / (
-                        np.linalg.norm(word_embedding) * np.linalg.norm(tag_embedding) + 1e-12)
-            emission_scores[tag_idx] = similarity
-
-        # Convert scores to probabilities
-        emission_probs = np.exp(emission_scores)
-        emission_probs /= np.sum(emission_probs)
-
-        return emission_probs
-        '''
+        ''' Use suffix tree: '''
         num_tags = len(self.all_tags)
         suffix = word[-self.suffix_length:] if len(word) >= self.suffix_length else word
 
@@ -396,37 +326,11 @@ class POSTagger():
             total_count = self.suffix_total_counts[suffix]
             emission_probs = (tag_counts + self.k) / (total_count + self.k * num_tags)
         else:
-            # If the suffix is unseen, default to uniform distribution or prior probabilities
-            #emission_probs = self.unigram_probs_ml  # Using prior tag probabilities
-            # Alternatively, use uniform distribution:
             emission_probs = np.ones(num_tags) / num_tags
 
         return emission_probs
 
-    '''
-    def compute_tag_embeddings(self):
-        """
-        Computes average embeddings for each tag based on words in the training data.
-        """
-        num_tags = len(self.all_tags)
-        self.tag_embeddings = np.zeros((num_tags, self.embedding_dim))
-        tag_counts = np.zeros(num_tags)
 
-        for word, idx in self.word2idx.items():
-            if word in self.glove_embeddings:
-                word_embedding = self.glove_embeddings[word]
-                for tag_idx in range(num_tags):
-                    count = self.emission_counts[tag_idx, idx]
-                    if count > 0:
-                        self.tag_embeddings[tag_idx] += word_embedding * count
-                        tag_counts[tag_idx] += count
-
-        for tag_idx in range(num_tags):
-            if tag_counts[tag_idx] > 0:
-                self.tag_embeddings[tag_idx] /= tag_counts[tag_idx]
-            else:
-                self.tag_embeddings[tag_idx] = np.zeros(self.embedding_dim)
-    '''
     def inference(self, sequence, method='viterbi'):
         """Tags a sequence with part of speech tags."""
         if method == 'greedy':
@@ -434,7 +338,7 @@ class POSTagger():
         elif method == 'beam':
             return self.beam_search_decode(sequence)
         elif method == 'viterbi':
-            return self.viterbi_decode(sequence)
+            return self.viterbi_trigram(sequence)
         else:
             raise ValueError('Unknown decoding method: {}'.format(method))
 
@@ -442,71 +346,55 @@ class POSTagger():
     def beam_search_decode(self, sequence, beam_width=3):
         """
         Beam search decoding implementation.
-        
-        :param sequence: The input sequence of words to tag.
-        :param beam_width: The number of top paths to retain at each step (k-best paths).
-        :return: The best tag sequence as a list of tag names.
         """
         num_tags = len(self.all_tags)
         
-        # Each element in the beam is a tuple of (path, log_probability)
-        # `path` is a list of tag indices, and `log_probability` is the accumulated log probability of that path.
-        beam = [([], 0.0)]  # Start with an empty path with log probability 0 (log(1))
+        beam = [([], 0.0)]
         
         for i, word in enumerate(sequence):
             word_idx = self.word2idx.get(word, None)
             if word_idx is None:
-                # Handle unknown word
                 emission_probs = self.handle_unknown_word(word)
             else:
-                # Get emission probabilities for this word
                 emission_probs = self.emission_probs[:, word_idx]
             
-            # To store all potential paths from the current beam
             new_beam = []
             
-            # Expand each path in the beam
             for path, log_prob in beam:
-                # Last two tags in the current path
                 prev_prev_prev_tag_idx = path[-3] if len(path) > 2 else None
                 prev_prev_tag_idx = path[-2] if len(path) > 1 else None
                 prev_tag_idx = path[-1] if len(path) > 0 else None
                 
-                # Consider all possible next tags
                 for tag_idx in range(num_tags):
-                    # Compute transition probability
                     if prev_prev_prev_tag_idx is not None and prev_prev_tag_idx is not None and prev_tag_idx is not None:
+                        # quadgram
                         trans_prob = self.transition_probs[prev_prev_prev_tag_idx, prev_prev_tag_idx, prev_tag_idx, tag_idx]
                     elif prev_prev_tag_idx is not None and prev_tag_idx is not None:
-                        # Use trigram probability
+                        # trigram 
                         trans_prob = self.l2 * self.trigram_probs_ml[prev_prev_tag_idx, prev_tag_idx, tag_idx] + \
                                     self.l3 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
                                     self.l4 * self.unigram_probs_ml[tag_idx]
                     elif prev_tag_idx is not None:
-                        # Use bigram probability
+                        # bigram 
                         trans_prob = self.l3 * self.bigram_probs_ml[prev_tag_idx, tag_idx] + \
                                     self.l4 * self.unigram_probs_ml[tag_idx]
                     else:
-                        # Use unigram probability
+                        # unigram 
                         trans_prob = self.unigram_probs_ml[tag_idx]
                     
-                    # Avoid log(0) by setting a minimum probability
                     emission_prob = emission_probs[tag_idx]
                     
-                    # Compute total log probability
+                    # Compute total log probability to avoid float issues
                     total_log_prob = log_prob + math.log(trans_prob) + math.log(emission_prob)
                     
-                    # Add the new path with its updated log probability
                     new_beam.append((path + [tag_idx], total_log_prob))
             
-            # Sort the new beam by log probability and retain only the top `beam_width` paths
-            new_beam.sort(key=lambda x: x[1], reverse=True)  # Higher log_prob is better
+            new_beam.sort(key=lambda x: x[1], reverse=True)
             beam = new_beam[:beam_width]
         
         # Select the best path from the beam (highest log probability)
         best_path, best_log_prob = max(beam, key=lambda x: x[1])
         
-        # Convert tag indices to tag names
         tag_sequence = [self.idx2tag[tag_idx] for tag_idx in best_path]
         
         return tag_sequence
@@ -520,7 +408,7 @@ class POSTagger():
         viterbi = np.zeros((sequence_length, num_tags))
         backpointer = np.zeros((sequence_length, num_tags), dtype=int)
 
-        # Initialization
+        # Initialize DP:
         word_idx = self.word2idx.get(sequence[0], None)
         if word_idx is None:
             emission_probs = self.handle_unknown_word(sequence[0])
@@ -528,7 +416,6 @@ class POSTagger():
             emission_probs = self.emission_probs[:, word_idx]
         viterbi[0, :] = np.log(self.unigram_probs_ml) + np.log(emission_probs)
 
-        # For t = 1 to T-1
         for t in range(1, sequence_length):
             word_idx = self.word2idx.get(sequence[t], None)
             if word_idx is None:
@@ -549,19 +436,93 @@ class POSTagger():
                 viterbi[t, s] = max_prob
                 backpointer[t, s] = max_state
 
-        # Termination
         best_last_state = np.argmax(viterbi[sequence_length - 1, :])
 
-        # Backtrack
+        # Backtrack:
         best_path = [best_last_state]
         for t in range(sequence_length - 1, 0, -1):
             best_last_state = backpointer[t, best_last_state]
             best_path.insert(0, best_last_state)
 
-        # Map indices to tags
         tag_sequence = [self.idx2tag[state] for state in best_path]
 
         return tag_sequence
+    
+    def viterbi_trigram(self, sequence):
+        """
+        Viterbi decoding implementation with trigram transitions.
+        """
+        num_tags = len(self.all_tags)
+        sequence_length = len(sequence)
+        viterbi = np.zeros((sequence_length, num_tags, num_tags))  # For trigram, store previous two tags
+        backpointer = np.zeros((sequence_length, num_tags, num_tags), dtype=int)
+
+        # Initialize DP with first two words:
+        word_idx_0 = self.word2idx.get(sequence[0], None)
+        word_idx_1 = self.word2idx.get(sequence[1], None) if sequence_length > 1 else None
+
+        if word_idx_0 is None:
+            emission_probs_0 = self.handle_unknown_word(sequence[0])
+        else:
+            emission_probs_0 = self.emission_probs[:, word_idx_0]
+        if word_idx_1 is None:
+            emission_probs_1 = self.handle_unknown_word(sequence[1]) if sequence_length > 1 else np.ones(num_tags)
+        else:
+            emission_probs_1 = self.emission_probs[:, word_idx_1] if sequence_length > 1 else np.ones(num_tags)
+
+        # Initialize for the first two tokens (start of trigram sequence)
+        for s1 in range(num_tags):  # First tag
+            for s2 in range(num_tags):  # Second tag
+                if sequence_length > 1:
+                    viterbi[1, s1, s2] = (
+                        np.log(self.unigram_probs_ml[s1]) +
+                        np.log(self.bigram_probs_ml[s1, s2]) +
+                        np.log(emission_probs_0[s1]) +
+                        np.log(emission_probs_1[s2])
+                    )
+                else:
+                    viterbi[0, s1, s2] = (
+                        np.log(self.unigram_probs_ml[s1]) +
+                        np.log(emission_probs_0[s1])
+                    )
+
+        # Dynamic programming to fill in the viterbi table for the rest of the sequence
+        for t in range(2, sequence_length):
+            word_idx = self.word2idx.get(sequence[t], None)
+            if word_idx is None:
+                emission_probs = self.handle_unknown_word(sequence[t])
+            else:
+                emission_probs = self.emission_probs[:, word_idx]
+            emission_log_probs = np.log(emission_probs)
+
+            for s2 in range(num_tags):  # Current state
+                for s1 in range(num_tags):  # Previous state
+                    max_prob = None
+                    max_state = None
+                    for s0 in range(num_tags):  # Previous-previous state
+                        trigram_transition_log = np.log(self.trigram_probs_ml[s0, s1, s2])
+                        prob = viterbi[t - 1, s0, s1] + trigram_transition_log + emission_log_probs[s2]
+                        if (max_prob is None) or (prob > max_prob):
+                            max_prob = prob
+                            max_state = s0
+                    viterbi[t, s1, s2] = max_prob
+                    backpointer[t, s1, s2] = max_state
+
+        # Find the best last two states
+        best_last_s1, best_last_s2 = np.unravel_index(np.argmax(viterbi[sequence_length - 1]), (num_tags, num_tags))
+
+        # Backtrack to find the best path
+        best_path = [best_last_s1, best_last_s2]
+        for t in range(sequence_length - 1, 1, -1):
+            best_last_s0 = backpointer[t, best_last_s1, best_last_s2]
+            best_path.insert(0, best_last_s0)
+            best_last_s2 = best_last_s1
+            best_last_s1 = best_last_s0
+
+        tag_sequence = [self.idx2tag[state] for state in best_path]
+
+        return tag_sequence
+
 
 if __name__ == "__main__":
     pos_tagger = POSTagger()
@@ -578,7 +539,7 @@ if __name__ == "__main__":
 
     # Predict tags for the test set
     test_predictions = []
-    for sentence in test_data:
+    for sentence in dev_data_x:
         tags = pos_tagger.inference(sentence)
         test_predictions.extend(tags)
 
@@ -597,26 +558,4 @@ if __name__ == "__main__":
 
     # Write them to a file to update the leaderboard
     df_predictions.to_csv('test_y.csv', index=False, quoting=csv.QUOTE_NONNUMERIC)
-    '''
-    pred = pd.read_csv('prediction.csv', index_col = "id")
-    dev  = pd.read_csv('data/dev_y.csv',  index_col = "id")
-
-    
-    pred.columns = ["predicted"]
-    dev.columns  = ["actual"]
-
-    data = dev.join(pred)
-    print(data.tail())
-    print(data.dtypes)
-    print("Data types in y_true:", set(type(label) for label in data.actual))
-    print("Data types in y_pred:", set(type(label) for label in data.predicted))
-    i = 0
-    for label in data.predicted:
-        i += 1
-        if type(label) == float:
-            print(label)
-            print(i)
-            break
-    '''
- 
    

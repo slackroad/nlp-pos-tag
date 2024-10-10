@@ -333,7 +333,7 @@ class POSTagger():
         return emission_probs
 
 
-    def inference(self, sequence, method='viterbi'):
+    def inference(self, sequence, method='greedy'):
         """Tags a sequence with part of speech tags."""
         if method == 'greedy':
             return self.beam_search_decode(sequence, beam_width=1)
